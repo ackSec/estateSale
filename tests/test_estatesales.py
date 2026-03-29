@@ -17,8 +17,10 @@ import pytest
 from estate_scraper.ai.ranking import (
     QUALITY_INDICATORS,
     assess_description_quality,
+    rank_from_description,
     rank_photos,
     _encode_image_for_ranking,
+    DESCRIPTION_EXTRACT_PROMPT,
     PHOTO_RANKING_SYSTEM,
     PHOTO_RANKING_PROMPT,
 )
@@ -601,6 +603,102 @@ class TestPhotoRankingPrompts:
 # ---------------------------------------------------------------------------
 # Integration: listing creation from scraper output
 # ---------------------------------------------------------------------------
+
+
+class TestRankFromDescription:
+    """Test description-based item extraction and ranking."""
+
+    @patch("estate_scraper.ai.ranking.call_claude")
+    def test_basic_extraction(self, mock_call):
+        mock_call.return_value = json.dumps({
+            "items": [
+                {
+                    "item_id": 1,
+                    "item_description": "14k gold ring with diamond",
+                    "estimated_value_low": 400,
+                    "estimated_value_high": 800,
+                    "value_reasoning": "Gold jewelry with precious stone",
+                    "category_tags": ["jewelry", "gold"],
+                    "mentioned_details": "14k gold, diamond setting",
+                },
+                {
+                    "item_id": 2,
+                    "item_description": "Mid-century modern teak credenza",
+                    "estimated_value_low": 200,
+                    "estimated_value_high": 500,
+                    "value_reasoning": "MCM furniture in demand",
+                    "category_tags": ["furniture", "mid-century"],
+                    "mentioned_details": "teak wood, Danish style",
+                },
+            ]
+        })
+        client = MagicMock()
+
+        rankings = rank_from_description(
+            client,
+            "This sale features 14k gold jewelry, mid-century modern teak credenza, and more.",
+            {"title": "Big Sale", "company": "Acme Estate Sales"},
+        )
+
+        assert len(rankings) == 2
+        assert rankings[0].rank == 1
+        assert rankings[0].listing.title == "14k gold ring with diamond"
+        assert rankings[0].estimated_value_high == Decimal("800")
+        assert "gold" in rankings[0].category_tags
+        assert rankings[0].listing.is_photo_only is True
+        mock_call.assert_called_once()
+
+    @patch("estate_scraper.ai.ranking.call_claude")
+    def test_empty_description(self, mock_call):
+        client = MagicMock()
+        result = rank_from_description(client, "")
+        assert result == []
+        mock_call.assert_not_called()
+
+    @patch("estate_scraper.ai.ranking.call_claude")
+    def test_very_short_description(self, mock_call):
+        client = MagicMock()
+        result = rank_from_description(client, "Stuff for sale")
+        assert result == []
+        mock_call.assert_not_called()
+
+    @patch("estate_scraper.ai.ranking.call_claude")
+    def test_malformed_response(self, mock_call):
+        mock_call.return_value = "not json"
+        client = MagicMock()
+        result = rank_from_description(client, "A long enough description with various estate sale items to analyze.")
+        assert result == []
+
+    @patch("estate_scraper.ai.ranking.call_claude")
+    def test_sorted_by_value(self, mock_call):
+        mock_call.return_value = json.dumps({
+            "items": [
+                {"item_id": 1, "item_description": "Cheap lamp", "estimated_value_low": 10,
+                 "estimated_value_high": 30, "value_reasoning": "basic", "category_tags": [], "mentioned_details": ""},
+                {"item_id": 2, "item_description": "Rolex watch", "estimated_value_low": 3000,
+                 "estimated_value_high": 8000, "value_reasoning": "luxury", "category_tags": [], "mentioned_details": ""},
+            ]
+        })
+        client = MagicMock()
+        rankings = rank_from_description(client, "This sale has a Rolex watch and a cheap lamp among many other items.")
+        assert rankings[0].listing.title == "Rolex watch"
+        assert rankings[1].listing.title == "Cheap lamp"
+
+    @patch("estate_scraper.ai.ranking.call_claude")
+    def test_no_metadata(self, mock_call):
+        """Works without sale_metadata."""
+        mock_call.return_value = json.dumps({"items": [
+            {"item_id": 1, "item_description": "Item", "estimated_value_low": 10,
+             "estimated_value_high": 50, "value_reasoning": "ok", "category_tags": [], "mentioned_details": ""},
+        ]})
+        client = MagicMock()
+        rankings = rank_from_description(client, "A sale with various interesting estate items for collectors.")
+        assert len(rankings) == 1
+
+    def test_description_extract_prompt_has_placeholders(self):
+        assert "{title}" in DESCRIPTION_EXTRACT_PROMPT
+        assert "{company}" in DESCRIPTION_EXTRACT_PROMPT
+        assert "{description}" in DESCRIPTION_EXTRACT_PROMPT
 
 
 class TestPhotoListingCreation:

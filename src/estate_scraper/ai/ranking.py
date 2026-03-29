@@ -125,7 +125,99 @@ def rank_listings(
     return ranked
 
 
-# --- Description Quality Assessment ---
+# --- Description-Based Item Extraction (for photo-only sites like EstateSales.org) ---
+
+DESCRIPTION_EXTRACT_SYSTEM = """You are an expert estate sale appraiser and antiques dealer with 30 years of experience. You specialize in identifying valuable items from estate sale descriptions.
+
+Your task is to read an estate sale description and extract every specific item or category of items mentioned, then rank them by resale potential and investment opportunity.
+
+You must respond ONLY with valid JSON, no markdown formatting."""
+
+DESCRIPTION_EXTRACT_PROMPT = """Read this estate sale listing description and extract every distinct item or item category mentioned. For each, estimate resale value and rank by investment potential.
+
+Sale Title: {title}
+Company: {company}
+
+Description:
+{description}
+
+For each item or category you can identify, provide:
+- item_id: a sequential number starting at 1
+- item_description: what the item is (be specific — include brand, material, era if mentioned)
+- estimated_value_low: low end of estimated resale value in USD
+- estimated_value_high: high end of estimated resale value in USD
+- value_reasoning: why this could be valuable (1-2 sentences)
+- category_tags: relevant tags (e.g., "jewelry", "gold", "vintage", "art", "furniture")
+- mentioned_details: any specific details from the description (brand names, materials, conditions)
+
+Focus on items with real resale value. Skip generic mentions like "miscellaneous household items" unless they include specifics.
+
+Respond with this JSON format:
+{{"items": [{{"item_id": 1, "item_description": "...", "estimated_value_low": 50, "estimated_value_high": 200, "value_reasoning": "...", "category_tags": ["tag1"], "mentioned_details": "..."}}]}}"""
+
+
+def rank_from_description(
+    client: anthropic.Anthropic,
+    description: str,
+    sale_metadata: dict[str, str] | None = None,
+) -> list[RankedListing]:
+    """Extract and rank items from a sale description using Claude.
+
+    Used as the first pass for estatesales.org — analyzes the description text
+    to identify potentially valuable items before any photo analysis.
+    """
+    if not description or len(description.strip()) < 20:
+        console.print("[yellow]Description too short to extract items from[/yellow]")
+        return []
+
+    metadata = sale_metadata or {}
+    title = metadata.get("title", "Estate Sale")
+    company = metadata.get("company", "Unknown")
+
+    console.print(f"[blue]Analyzing sale description for valuable items...[/blue]")
+
+    prompt = DESCRIPTION_EXTRACT_PROMPT.format(
+        title=title,
+        company=company,
+        description=description[:3000],
+    )
+
+    response = call_claude(
+        client=client,
+        system=DESCRIPTION_EXTRACT_SYSTEM,
+        user_content=prompt,
+        max_tokens=8192,
+    )
+
+    try:
+        data = json.loads(response)
+        items = data.get("items", [])
+    except json.JSONDecodeError:
+        console.print("[red]Failed to parse description analysis response[/red]")
+        return []
+
+    # Sort by estimated value
+    items.sort(key=lambda x: x.get("estimated_value_high", 0), reverse=True)
+
+    ranked: list[RankedListing] = []
+    for rank, item in enumerate(items, 1):
+        listing = Listing(
+            listing_id=f"desc-item-{item.get('item_id', rank)}",
+            title=item.get("item_description", "Unknown item"),
+            description=item.get("mentioned_details", ""),
+            is_photo_only=True,
+        )
+        ranked.append(RankedListing(
+            listing=listing,
+            rank=rank,
+            estimated_value_low=Decimal(str(item.get("estimated_value_low", 0))),
+            estimated_value_high=Decimal(str(item.get("estimated_value_high", 0))),
+            value_reasoning=item.get("value_reasoning", ""),
+            category_tags=item.get("category_tags", []),
+        ))
+
+    console.print(f"[green]Identified {len(ranked)} potentially valuable items from description[/green]")
+    return ranked
 
 # Indicators that a description has specific, actionable item info
 QUALITY_INDICATORS = [

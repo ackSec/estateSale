@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.prompt import Prompt
 
 from estate_scraper.ai.client import get_client
-from estate_scraper.ai.ranking import assess_description_quality, rank_listings, rank_photos
+from estate_scraper.ai.ranking import rank_from_description, rank_listings, rank_photos
 from estate_scraper.ai.valuation import valuate_items
 from estate_scraper.config import load_config
 from estate_scraper.images import download_listing_images
@@ -144,22 +144,52 @@ async def _scan_async(
     ai_client = get_client(config.anthropic_api_key)
 
     if any(lst.is_photo_only for lst in listings):
-        # Photo-only site — check description quality to decide ranking approach
-        desc_quality = assess_description_quality(ai_client, sale_description)
-        if desc_quality == "good":
-            console.print("[green]Description has specific items — using text-based ranking[/green]")
-            rankings = rank_listings(ai_client, listings)
+        # Photo-only site (e.g. estatesales.org)
+        # Step 1: Always analyze the description first
+        desc_rankings = rank_from_description(ai_client, sale_description, sale_metadata)
+
+        if desc_rankings:
+            console.print(f"\n[bold cyan]Items identified from sale description:[/bold cyan]")
+            display_rankings(desc_rankings)
+
+            # Step 2: Ask if user wants to also do photo analysis
+            photo_choice = Prompt.ask(
+                "[bold]Want to also analyze photos for items not in the description? "
+                f"(25% sample of {len(listings)} photos)[/bold]",
+                choices=["y", "n"],
+                default="y",
+            )
+
+            if photo_choice == "y":
+                console.print(f"\n[blue]Running photo analysis ({sample_rate:.0%} sample)...[/blue]")
+                photo_rankings = rank_photos(ai_client, listings, sample_rate=sample_rate)
+                # Merge: description items first, then photo-discovered items
+                seen_titles = {r.listing.title.lower() for r in desc_rankings}
+                next_rank = len(desc_rankings) + 1
+                for pr in photo_rankings:
+                    if pr.listing.title.lower() not in seen_titles:
+                        pr.rank = next_rank
+                        desc_rankings.append(pr)
+                        next_rank += 1
+
+                if photo_rankings:
+                    console.print(f"\n[bold cyan]Combined results (description + photos):[/bold cyan]")
+                    display_rankings(desc_rankings)
+
+            rankings = desc_rankings
         else:
-            console.print("[yellow]Description is vague — using photo-based ranking "
-                          f"({sample_rate:.0%} sample)[/yellow]")
+            # Description had nothing useful — go straight to photos
+            console.print("[yellow]Description didn't yield specific items — analyzing photos "
+                          f"({sample_rate:.0%} sample)...[/yellow]")
             rankings = rank_photos(ai_client, listings, sample_rate=sample_rate)
+            display_rankings(rankings)
     else:
+        # BidMaxPro flow — individual item listings with titles
         rankings = rank_listings(ai_client, listings)
+        display_rankings(rankings)
 
     session.rankings = rankings
     session.save("ranking.json")
-
-    display_rankings(rankings)
 
     # --- Phase 4: User Selection ---
     if not rankings:
