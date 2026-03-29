@@ -132,20 +132,13 @@ async def _scan_async(
     )
     session.save("listings.json")
 
-    # --- Phase 2: Download images ---
-    if not skip_images:
-        listings = await download_listing_images(listings, session_dir)
-        session.listings = listings
-        session.save("listings.json")
-
-    total_images = sum(1 for lst in listings for img in lst.images if img.local_path)
-
-    # --- Phase 3: AI Ranking ---
     ai_client = get_client(config.anthropic_api_key)
+    is_photo_only = any(lst.is_photo_only for lst in listings)
 
-    if any(lst.is_photo_only for lst in listings):
-        # Photo-only site (e.g. estatesales.org)
-        # Step 1: Always analyze the description first
+    if is_photo_only:
+        # --- Photo-only site (e.g. estatesales.org) ---
+        # Step 1: Analyze description BEFORE downloading any images
+        console.print()
         desc_rankings = rank_from_description(ai_client, sale_description, sale_metadata)
 
         if desc_rankings:
@@ -155,12 +148,18 @@ async def _scan_async(
             # Step 2: Ask if user wants to also do photo analysis
             photo_choice = Prompt.ask(
                 "[bold]Want to also analyze photos for items not in the description? "
-                f"(25% sample of {len(listings)} photos)[/bold]",
+                f"({sample_rate:.0%} sample of {len(listings)} photos)[/bold]",
                 choices=["y", "n"],
                 default="y",
             )
 
             if photo_choice == "y":
+                # Download images only if user opts in
+                if not skip_images:
+                    listings = await download_listing_images(listings, session_dir)
+                    session.listings = listings
+                    session.save("listings.json")
+
                 console.print(f"\n[blue]Running photo analysis ({sample_rate:.0%} sample)...[/blue]")
                 photo_rankings = rank_photos(ai_client, listings, sample_rate=sample_rate)
                 # Merge: description items first, then photo-discovered items
@@ -178,15 +177,26 @@ async def _scan_async(
 
             rankings = desc_rankings
         else:
-            # Description had nothing useful — go straight to photos
-            console.print("[yellow]Description didn't yield specific items — analyzing photos "
-                          f"({sample_rate:.0%} sample)...[/yellow]")
+            # Description had nothing useful — download images, then analyze photos
+            console.print("[yellow]Description didn't yield specific items — falling back to photos...[/yellow]")
+            if not skip_images:
+                listings = await download_listing_images(listings, session_dir)
+                session.listings = listings
+                session.save("listings.json")
+
             rankings = rank_photos(ai_client, listings, sample_rate=sample_rate)
             display_rankings(rankings)
     else:
-        # BidMaxPro flow — individual item listings with titles
+        # --- BidMaxPro flow — individual item listings with titles ---
+        if not skip_images:
+            listings = await download_listing_images(listings, session_dir)
+            session.listings = listings
+            session.save("listings.json")
+
         rankings = rank_listings(ai_client, listings)
         display_rankings(rankings)
+
+    total_images = sum(1 for lst in listings for img in lst.images if img.local_path)
 
     session.rankings = rankings
     session.save("ranking.json")
