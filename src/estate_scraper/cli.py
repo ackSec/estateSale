@@ -11,14 +11,14 @@ from rich.console import Console
 from rich.prompt import Prompt
 
 from estate_scraper.ai.client import get_client
-from estate_scraper.ai.ranking import rank_listings
+from estate_scraper.ai.ranking import assess_description_quality, rank_listings, rank_photos
 from estate_scraper.ai.valuation import valuate_items
 from estate_scraper.config import load_config
 from estate_scraper.images import download_listing_images
 from estate_scraper.models import RankedListing, ScrapeSession
 from estate_scraper.reports.terminal import display_rankings, display_summary, display_valuations
-from estate_scraper.scrapers.bidmaxpro import BidMaxProScraper
-from estate_scraper.utils import extract_store_slug
+from estate_scraper.scrapers.base import BaseScraper
+from estate_scraper.utils import extract_store_slug, extract_sale_slug_estatesales
 
 app = typer.Typer(help="Estate sale scraper with AI-powered valuation")
 console = Console()
@@ -51,6 +51,23 @@ def _get_session_dir(sale_slug: str) -> Path:
     return session_dir
 
 
+def _create_scraper(config) -> BaseScraper:
+    """Create the appropriate scraper based on site config."""
+    if config.site.name == "EstateSales":
+        from estate_scraper.scrapers.estatesales import EstateSalesScraper
+        return EstateSalesScraper(config.site)
+    else:
+        from estate_scraper.scrapers.bidmaxpro import BidMaxProScraper
+        return BidMaxProScraper(config.site)
+
+
+def _get_sale_slug(url: str, config) -> str:
+    """Get the sale slug based on site type."""
+    if config.site.name == "EstateSales":
+        return extract_sale_slug_estatesales(url)
+    return extract_store_slug(url)
+
+
 @app.command()
 def scan(
     url: str = typer.Argument(help="URL of the estate sale/auction page"),
@@ -58,9 +75,10 @@ def scan(
     skip_details: bool = typer.Option(False, help="Skip fetching detail pages"),
     skip_images: bool = typer.Option(False, help="Skip downloading images"),
     concurrency: int = typer.Option(3, help="Concurrent detail page fetches"),
+    sample_rate: float = typer.Option(0.25, help="Photo sample rate for photo-only sites (0.0-1.0)"),
 ) -> None:
     """Scrape an estate sale, rank items by value, and deep-dive selected items."""
-    asyncio.run(_scan_async(url, max_pages, skip_details, skip_images, concurrency))
+    asyncio.run(_scan_async(url, max_pages, skip_details, skip_images, concurrency, sample_rate))
 
 
 async def _scan_async(
@@ -69,6 +87,7 @@ async def _scan_async(
     skip_details: bool,
     skip_images: bool,
     concurrency: int,
+    sample_rate: float,
 ) -> None:
     config = load_config(url)
 
@@ -76,14 +95,15 @@ async def _scan_async(
         console.print("[red]Error: ANTHROPIC_API_KEY not set. Add it to .env file.[/red]")
         raise typer.Exit(1)
 
-    sale_slug = extract_store_slug(url)
+    sale_slug = _get_sale_slug(url, config)
     session_dir = _get_session_dir(sale_slug)
     console.print(f"\n[bold cyan]Estate Sale Scraper[/bold cyan]")
+    console.print(f"[dim]Site: {config.site.name}[/dim]")
     console.print(f"[dim]URL: {url}[/dim]")
     console.print(f"[dim]Output: {session_dir}[/dim]\n")
 
     # --- Phase 1: Scrape ---
-    scraper = BidMaxProScraper(config.site)
+    scraper = _create_scraper(config)
     try:
         listings = await scraper.scrape_listings(url)
 
@@ -91,10 +111,14 @@ async def _scan_async(
             console.print("[red]No listings found. Check the URL and try again.[/red]")
             raise typer.Exit(1)
 
-        # Fetch detail pages
-        if not skip_details:
+        # Fetch detail pages (skipped for photo-only scrapers)
+        if not skip_details and not scraper.is_photo_only:
             listings = await scraper.scrape_all_details(listings, concurrency=concurrency)
     finally:
+        sale_description = scraper.get_sale_description()
+        sale_metadata = {}
+        if hasattr(scraper, "get_sale_metadata"):
+            sale_metadata = scraper.get_sale_metadata()
         await scraper.close()
 
     # Save raw listings
@@ -103,6 +127,8 @@ async def _scan_async(
         sale_slug=sale_slug,
         output_dir=session_dir,
         listings=listings,
+        sale_metadata=sale_metadata,
+        sample_rate=sample_rate,
     )
     session.save("listings.json")
 
@@ -116,7 +142,20 @@ async def _scan_async(
 
     # --- Phase 3: AI Ranking ---
     ai_client = get_client(config.anthropic_api_key)
-    rankings = rank_listings(ai_client, listings)
+
+    if any(lst.is_photo_only for lst in listings):
+        # Photo-only site — check description quality to decide ranking approach
+        desc_quality = assess_description_quality(ai_client, sale_description)
+        if desc_quality == "good":
+            console.print("[green]Description has specific items — using text-based ranking[/green]")
+            rankings = rank_listings(ai_client, listings)
+        else:
+            console.print("[yellow]Description is vague — using photo-based ranking "
+                          f"({sample_rate:.0%} sample)[/yellow]")
+            rankings = rank_photos(ai_client, listings, sample_rate=sample_rate)
+    else:
+        rankings = rank_listings(ai_client, listings)
+
     session.rankings = rankings
     session.save("ranking.json")
 

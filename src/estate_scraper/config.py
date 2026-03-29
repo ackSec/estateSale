@@ -64,6 +64,8 @@ def detect_site(url: str) -> str:
     domain = urlparse(url).netloc.lower()
     if "bidmaxpro" in domain:
         return "bidmaxpro"
+    if "estatesales" in domain:
+        return "estatesales"
     raise ValueError(f"Unknown site: {domain}. No scraper config available.")
 
 

@@ -29,6 +29,7 @@ class Listing(BaseModel):
     images: list[ListingImage] = Field(default_factory=list)
     category: str = ""
     seller: str = ""
+    is_photo_only: bool = False
 
 
 class RankedListing(BaseModel):
@@ -59,6 +60,8 @@ class ScrapeSession(BaseModel):
     listings: list[Listing] = Field(default_factory=list)
     rankings: list[RankedListing] = Field(default_factory=list)
     valuations: list[Valuation] = Field(default_factory=list)
+    sale_metadata: dict[str, str] = Field(default_factory=dict)
+    sample_rate: float = 1.0
 
     def save(self, filename: str) -> Path:
         filepath = self.output_dir / filename

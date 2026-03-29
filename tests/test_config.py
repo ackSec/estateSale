@@ -10,6 +10,12 @@ class TestDetectSite:
     def test_bidmaxpro_no_www(self):
         assert detect_site("https://bidmaxpro.com/listings") == "bidmaxpro"
 
+    def test_estatesales(self):
+        assert detect_site("https://estatesales.org/estate-sales/ca/walnut-creek/94598/test-2430392") == "estatesales"
+
+    def test_estatesales_www(self):
+        assert detect_site("https://www.estatesales.org/estate-sales/ca/test") == "estatesales"
+
     def test_unknown_domain(self):
         with pytest.raises(ValueError, match="Unknown site"):
             detect_site("https://www.ebay.com/listing/123")
@@ -22,6 +28,11 @@ class TestLoadSiteConfig:
         assert config.base_url == "https://www.bidmaxpro.com"
         assert config.selectors.listing_container == "[data-listing-id]"
         assert config.pagination.max_per_page == 80
+
+    def test_load_estatesales(self):
+        config = load_site_config("estatesales")
+        assert config.name == "EstateSales"
+        assert config.base_url == "https://estatesales.org"
 
     def test_load_nonexistent(self):
         with pytest.raises(FileNotFoundError):

@@ -1,0 +1,19 @@
+name: EstateSales
+base_url: https://estatesales.org
+browse_path: /estate-sales
+photo_cdn: https://eso-cdn.tlcdn.workers.dev
+
+selectors:
+  sale_title: "h1"
+  sale_description: ".sale-description, .description, [class*='description']"
+  sale_dates: "li[class*='date'], .sale-dates li"
+  sale_address: ".sale-address, [class*='address']"
+  sale_company: ".company-name, [class*='company']"
+  photo_gallery: ".photo-gallery img, .photos img, img[alt='Estate sale photo']"
+  photo_link: "a[href*='/photos/']"
+  photo_count: "[class*='photo-count'], .photo-count"
+
+pagination:
+  param: page
+  per_page_param: per_page
+  max_per_page: 100
