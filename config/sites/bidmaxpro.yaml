@@ -1,0 +1,25 @@
+name: BidMaxPro
+base_url: https://www.bidmaxpro.com
+browse_path: /index.php?module=listings&controller=browse
+store_action: "&action=store&store_slug={store_slug}"
+ajax_endpoint: /index.php?module=app&controller=async&action=listing-updates
+detail_path_template: /index.php?module=listings&controller=listing&action=details&id={id}&name={slug}
+
+pagination:
+  param: page
+  per_page_param: show
+  max_per_page: 80
+
+selectors:
+  listing_container: "[data-listing-id]"
+  listing_id_attr: "data-listing-id"
+  title: "a[class*='product'], h2 a, .product-title a"
+  price: ".au-price"
+  bid_count: ".au-nb-bids"
+  status: ".au-status"
+  countdown: ".au-countdown"
+  image: "img.lazyload, img[data-src]"
+  image_src_attr: "data-src"
+  pagination_info: ".listing-count, .total-count"
+  detail_description: ".listing-description, .description, #description"
+  detail_images: ".listing-gallery img, .gallery img, .fotorama img, .image-gallery img"
